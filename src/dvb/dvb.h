@@ -208,6 +208,11 @@ typedef struct dvb_adapter {
 
   int tda_allpids_dmx_fd;
   int tda_dump_fd;
+
+  uint32_t tda_last_fec;
+
+  int tda_unc_is_delta;  /* 1 if we believe FE_READ_UNCORRECTED_BLOCKS
+			  * return dela values */
 #endif
 
 } dvb_adapter_t;
