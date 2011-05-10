@@ -196,7 +196,7 @@ dvb_adapter_init(void)
 	       "/sys/class/dvb/dvb%d.frontend%d/device", i, j);
 
       if(realpath(path, busid) == NULL)
-	continue;
+	snprintf(busid, sizeof(busid), "unmapped%d/%d", i, j);
 
       snprintf(path, sizeof(path), "/dev/dvb/adapter%d/frontend%d", i, j);
       fd = tvh_open(path, O_RDONLY | O_NONBLOCK, 0);

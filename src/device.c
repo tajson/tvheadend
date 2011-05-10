@@ -107,13 +107,18 @@ device_add(const char *path, const char *busid, const char *devicename,
   char line[64];
   int speed;
 
-  snprintf(speedpath, sizeof(speedpath), "%s/speed", busid);
+  if(busid[0] == '/') {
 
-  if(readlinefromfile(speedpath, line, sizeof(line))) {
-    // Unable to read speed, assume it's PCI
-    speed = HOSTCONNECTION_PCI;
+    snprintf(speedpath, sizeof(speedpath), "%s/speed", busid);
+
+    if(readlinefromfile(speedpath, line, sizeof(line))) {
+      // Unable to read speed, assume it's PCI
+      speed = HOSTCONNECTION_PCI;
+    } else {
+      speed = atoi(line) >= 480 ? HOSTCONNECTION_USB480 : HOSTCONNECTION_USB12;
+    }
   } else {
-    speed = atoi(line) >= 480 ? HOSTCONNECTION_USB480 : HOSTCONNECTION_USB12;
+    speed = HOSTCONNECTION_UNKNOWN;
   }
 
   tvhlog(LOG_INFO, "DEVICE", "Found device %s (%s)", path, type);
