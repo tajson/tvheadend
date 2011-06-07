@@ -294,7 +294,7 @@ htsp_build_channel(channel_t *ch, const char *method)
 {
   channel_tag_mapping_t *ctm;
   channel_tag_t *ct;
-  service_t *t;
+  //  service_t *t;
 
   htsmsg_t *out = htsmsg_create_map();
   htsmsg_t *tags = htsmsg_create_list();
@@ -317,7 +317,8 @@ htsp_build_channel(channel_t *ch, const char *method)
     if(ct->ct_enabled && !ct->ct_internal)
       htsmsg_add_u32(tags, NULL, ct->ct_identifier);
   }
-
+  abort();
+#if 0
   LIST_FOREACH(t, &ch->ch_services, s_ch_link) {
     htsmsg_t *svcmsg = htsmsg_create_map();
     uint16_t caid;
@@ -329,6 +330,7 @@ htsp_build_channel(channel_t *ch, const char *method)
     }
     htsmsg_add_msg(services, NULL, svcmsg);
   }
+#endif
 
   htsmsg_add_msg(out, "services", services);
   htsmsg_add_msg(out, "tags", tags);

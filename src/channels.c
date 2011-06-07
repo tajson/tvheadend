@@ -348,7 +348,7 @@ channel_save(channel_t *ch)
 int
 channel_rename(channel_t *ch, const char *newname)
 {
-  service_t *t;
+  service_config_t *sc;
 
   lock_assert(&global_lock);
 
@@ -361,8 +361,8 @@ channel_rename(channel_t *ch, const char *newname)
   RB_REMOVE(&channel_name_tree, ch, ch_name_link);
   channel_set_name(ch, newname);
 
-  LIST_FOREACH(t, &ch->ch_services, s_ch_link)
-    t->s_config_save(t);
+  LIST_FOREACH(sc, &ch->ch_services, sc_ch_link)
+    abort(); //sc->sc_class->sc_config_save(sc);
 
   channel_save(ch);
   htsp_channel_update(ch);
@@ -375,7 +375,7 @@ channel_rename(channel_t *ch, const char *newname)
 void
 channel_delete(channel_t *ch)
 {
-  service_t *t;
+  service_config_t *sc;
   th_subscription_t *s;
   channel_tag_mapping_t *ctm;
 
@@ -391,8 +391,8 @@ channel_delete(channel_t *ch)
 
   dvr_destroy_by_channel(ch);
 
-  while((t = LIST_FIRST(&ch->ch_services)) != NULL)
-    service_map_channel(t, NULL, 1);
+  while((sc = LIST_FIRST(&ch->ch_services)) != NULL)
+    service_map_channel(sc, NULL);
 
   while((s = LIST_FIRST(&ch->ch_subscriptions)) != NULL) {
     LIST_REMOVE(s, ths_channel_link);
@@ -429,15 +429,15 @@ channel_delete(channel_t *ch)
 void
 channel_merge(channel_t *dst, channel_t *src)
 {
-  service_t *t;
+  service_config_t *sc;
 
   lock_assert(&global_lock);
   
   tvhlog(LOG_NOTICE, "channels", "Channel \"%s\" merged into \"%s\"",
 	 src->ch_name, dst->ch_name);
 
-  while((t = LIST_FIRST(&src->ch_services)) != NULL)
-    service_map_channel(t, dst, 1);
+  while((sc = LIST_FIRST(&src->ch_services)) != NULL)
+    service_map_channel(sc, dst);
 
   channel_delete(src);
 }

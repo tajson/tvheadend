@@ -1,3 +1,4 @@
+#if 0
 /*
  *  Raw TS input (for debugging)
  *  Copyright (C) 2009 Andreas Öman
@@ -326,3 +327,4 @@ rawts_init(const char *filename)
 
   pthread_create(&ptid, NULL, raw_ts_reader, rt);
 }
+#endif

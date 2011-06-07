@@ -75,9 +75,10 @@ subscription_link_service(th_subscription_t *s, service_t *t)
 
   pthread_mutex_lock(&t->s_stream_mutex);
 
-  if(TAILQ_FIRST(&t->s_components) != NULL)
+  if(LIST_FIRST(&t->s_elementary_streams) != NULL)
     s->ths_start_message =
-      streaming_msg_create_data(SMT_START, service_build_stream_start(t));
+      streaming_msg_create_data(SMT_START,
+				service_build_stream_start(t));
 
   // Link to service output
   streaming_target_connect(&t->s_streaming_pad, &s->ths_input);
@@ -115,7 +116,7 @@ subscription_unlink_service(th_subscription_t *s, int reason)
   // Unlink from service output
   streaming_target_disconnect(&t->s_streaming_pad, &s->ths_input);
 
-  if(TAILQ_FIRST(&t->s_components) != NULL && 
+  if(LIST_FIRST(&t->s_elementary_streams) != NULL && 
      s->ths_state == SUBSCRIPTION_GOT_SERVICE) {
     // Send a STOP message to the subscription client
     sm = streaming_msg_create_code(SMT_STOP, reason);
@@ -332,8 +333,8 @@ subscription_create_from_channel(channel_t *ch, unsigned int weight,
 	   s->ths_title, ch->ch_name);
   } else {
     source_info_t si;
-
-    s->ths_service->s_setsourceinfo(s->ths_service, &si);
+    const service_class_t *scl = s->ths_service->s_config->sc_class;
+    scl->scl_getsourceinfo(s->ths_service, &si);
 
     tvhlog(LOG_INFO, "subscription", 
 	   "\"%s\" subscribing on \"%s\", weight: %d, adapter: \"%s\", "
@@ -345,7 +346,7 @@ subscription_create_from_channel(channel_t *ch, unsigned int weight,
 	   si.si_mux      ?: "<N/A>",
 	   si.si_provider ?: "<N/A>",
 	   si.si_service  ?: "<N/A>",
-	   s->ths_service->s_quality_index(s->ths_service));
+	   scl->scl_quality_index(s->ths_service));
 
     service_source_info_free(&si);
   }
@@ -357,16 +358,16 @@ subscription_create_from_channel(channel_t *ch, unsigned int weight,
  *
  */
 th_subscription_t *
-subscription_create_from_service(service_t *t, const char *name,
-				   streaming_target_t *st, int flags)
+subscription_create_from_service(service_t *s, const char *name,
+				 streaming_target_t *st, int flags)
 {
-  th_subscription_t *s = subscription_create(INT32_MAX, name, st, flags, 1);
+  th_subscription_t *sub = subscription_create(INT32_MAX, name, st, flags, 1);
   source_info_t si;
   int r;
 
-  if(t->s_status != SERVICE_RUNNING) {
-    if((r = service_start(t, INT32_MAX, 1)) != 0) {
-      subscription_unsubscribe(s);
+  if(s->s_status != SERVICE_RUNNING) {
+    if((r = service_start(s, INT32_MAX, 1)) != 0) {
+      subscription_unsubscribe(sub);
 
       tvhlog(LOG_INFO, "subscription", 
 	     "\"%s\" direct subscription failed -- %s", name,
@@ -375,23 +376,25 @@ subscription_create_from_service(service_t *t, const char *name,
     }
   }
 
-  t->s_setsourceinfo(t, &si);
+  const service_class_t *scl = s->s_config->sc_class;
+
+  scl->scl_getsourceinfo(s, &si);
 
   tvhlog(LOG_INFO, "subscription", 
 	 "\"%s\" direct subscription to adapter: \"%s\", "
 	 "network: \"%s\", mux: \"%s\", provider: \"%s\", "
 	 "service: \"%s\", quality: %d",
-	 s->ths_title,
+	 sub->ths_title,
 	 si.si_adapter  ?: "<N/A>",
 	 si.si_network  ?: "<N/A>",
 	 si.si_mux      ?: "<N/A>",
 	 si.si_provider ?: "<N/A>",
 	 si.si_service  ?: "<N/A>",
-	 t->s_quality_index(t));
+	 scl->scl_quality_index(s));
   service_source_info_free(&si);
 
-  subscription_link_service(s, t);
-  return s;
+  subscription_link_service(sub, s);
+  return sub;
 }
 
 

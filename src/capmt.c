@@ -1,3 +1,4 @@
+#if 0
 /*
  *  tvheadend, CAPMT Server
  *  Copyright (C) 2009
@@ -864,3 +865,4 @@ capmt_init(void)
   dtable_load(dt);
 }
 
+#endif

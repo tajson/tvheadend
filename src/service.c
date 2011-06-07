@@ -50,7 +50,6 @@
 
 #define SERVICE_HASH_WIDTH 101
 
-static struct service_list servicehash[SERVICE_HASH_WIDTH];
 
 static void service_data_timeout(void *aux);
 
@@ -58,21 +57,27 @@ static void service_data_timeout(void *aux);
  *
  */
 static void
-stream_init(elementary_stream_t *st)
+elementary_stream_create(service_t *s, elementary_stream_config_t *esc)
 {
-  st->es_cc_valid = 0;
+  elementary_stream_t *es = calloc(1, sizeof(elementary_stream_t));
 
-  st->es_startcond = 0xffffffff;
-  st->es_curdts = PTS_UNSET;
-  st->es_curpts = PTS_UNSET;
-  st->es_prevdts = PTS_UNSET;
+  es->es_config = *esc;
+
+  es->es_cc_valid = 0;
+
+  es->es_startcond = 0xffffffff;
+  es->es_curdts = PTS_UNSET;
+  es->es_curpts = PTS_UNSET;
+  es->es_prevdts = PTS_UNSET;
   
-  st->es_pcr_real_last = PTS_UNSET;
-  st->es_pcr_last      = PTS_UNSET;
-  st->es_pcr_drift     = 0;
-  st->es_pcr_recovery_fails = 0;
+  es->es_pcr_real_last = PTS_UNSET;
+  es->es_pcr_last      = PTS_UNSET;
+  es->es_pcr_drift     = 0;
+  es->es_pcr_recovery_fails = 0;
 
-  st->es_blank = 0;
+  es->es_blank = 0;
+
+  LIST_INSERT_HEAD(&s->s_elementary_streams, es, es_link);
 }
 
 
@@ -80,36 +85,35 @@ stream_init(elementary_stream_t *st)
  *
  */
 static void
-stream_clean(elementary_stream_t *st)
+elementary_stream_destroy(elementary_stream_t *es)
 {
-  if(st->es_demuxer_fd != -1) {
+  LIST_REMOVE(es, es_link);
+
+  if(es->es_demuxer_fd != -1) {
     // XXX: Should be in DVB-code perhaps
-    close(st->es_demuxer_fd);
-    st->es_demuxer_fd = -1;
+    close(es->es_demuxer_fd);
+    es->es_demuxer_fd = -1;
   }
 
-  free(st->es_priv);
-  st->es_priv = NULL;
+  free(es->es_priv);
 
   /* Clear reassembly buffers */
-
-  st->es_startcode = 0;
+  es->es_startcode = 0;
   
-  sbuf_free(&st->es_buf);
-  sbuf_free(&st->es_buf_ps);
-  sbuf_free(&st->es_buf_a);
+  sbuf_free(&es->es_buf);
+  sbuf_free(&es->es_buf_ps);
+  sbuf_free(&es->es_buf_a);
 
-  if(st->es_curpkt != NULL) {
-    pkt_ref_dec(st->es_curpkt);
-    st->es_curpkt = NULL;
-  }
+  if(es->es_curpkt != NULL)
+    pkt_ref_dec(es->es_curpkt);
 
-  free(st->es_global_data);
-  st->es_global_data = NULL;
-  st->es_global_data_len = 0;
+  free(es->es_global_data);
+
+
+  free(es);
 }
 
-
+#if 0
 /**
  *
  */
@@ -119,42 +123,45 @@ service_stream_destroy(service_t *t, elementary_stream_t *st)
   if(t->s_status == SERVICE_RUNNING)
     stream_clean(st);
   TAILQ_REMOVE(&t->s_components, st, es_link);
-  free(st->es_nicename);
+  free(->es_nicename);
   free(st);
 }
+#endif
+
 
 /**
  * Service lock must be held
  */
 static void
-service_stop(service_t *t)
+service_stop(service_t *s)
 {
   th_descrambler_t *td;
-  elementary_stream_t *st;
- 
-  gtimer_disarm(&t->s_receive_timer);
+  elementary_stream_t *es;
+  const service_class_t *scl = s->s_config->sc_class;
 
-  t->s_stop_feed(t);
+  gtimer_disarm(&s->s_receive_timer);
 
-  pthread_mutex_lock(&t->s_stream_mutex);
+  scl->scl_stop(s);
 
-  while((td = LIST_FIRST(&t->s_descramblers)) != NULL)
+  pthread_mutex_lock(&s->s_stream_mutex);
+
+  while((td = LIST_FIRST(&s->s_descramblers)) != NULL)
     td->td_stop(td);
 
-  t->s_tt_commercial_advice = COMMERCIAL_UNKNOWN;
+  s->s_tt_commercial_advice = COMMERCIAL_UNKNOWN;
  
-  assert(LIST_FIRST(&t->s_streaming_pad.sp_targets) == NULL);
-  assert(LIST_FIRST(&t->s_subscriptions) == NULL);
+  assert(LIST_FIRST(&s->s_streaming_pad.sp_targets) == NULL);
+  assert(LIST_FIRST(&s->s_subscriptions) == NULL);
 
   /**
    * Clean up each stream
    */
-  TAILQ_FOREACH(st, &t->s_components, es_link)
-    stream_clean(st);
+  while((es = LIST_FIRST(&s->s_elementary_streams)) != NULL)
+    elementary_stream_destroy(es);
 
-  t->s_status = SERVICE_IDLE;
+  s->s_status = SERVICE_IDLE;
 
-  pthread_mutex_unlock(&t->s_stream_mutex);
+  pthread_mutex_unlock(&s->s_stream_mutex);
 }
 
 
@@ -166,8 +173,7 @@ service_stop(service_t *t)
  * Global lock must be held
  */
 void
-service_remove_subscriber(service_t *t, th_subscription_t *s,
-			    int reason)
+service_remove_subscriber(service_t *t, th_subscription_t *s, int reason)
 {
   lock_assert(&global_lock);
 
@@ -188,54 +194,40 @@ service_remove_subscriber(service_t *t, th_subscription_t *s,
  *
  */
 int
-service_start(service_t *t, unsigned int weight, int force_start)
+service_start(service_t *s, unsigned int weight, int force_start)
 {
-  elementary_stream_t *st;
+  elementary_stream_config_t *esc;
   int r, timeout = 2;
+  const service_class_t *scl = s->s_config->sc_class;
 
   lock_assert(&global_lock);
 
-  assert(t->s_status != SERVICE_RUNNING);
-  t->s_streaming_status = 0;
-  t->s_pcr_drift = 0;
+  assert(s->s_status != SERVICE_RUNNING);
+  s->s_streaming_status = 0;
+  s->s_pcr_drift = 0;
 
-  if((r = t->s_start_feed(t, weight, force_start)))
+  if((r = scl->scl_start(s, weight, force_start)))
     return r;
 
-  cwc_service_start(t);
-  capmt_service_start(t);
+  cwc_service_start(s);
+  capmt_service_start(s);
 
-  pthread_mutex_lock(&t->s_stream_mutex);
+  pthread_mutex_lock(&s->s_stream_mutex);
 
-  t->s_status = SERVICE_RUNNING;
-  t->s_current_pts = PTS_UNSET;
+  s->s_status = SERVICE_RUNNING;
+  s->s_current_pts = PTS_UNSET;
 
-  /**
-   * Initialize stream
-   */
-  TAILQ_FOREACH(st, &t->s_components, es_link)
-    stream_init(st);
+  TAILQ_FOREACH(esc, &s->s_config->sc_elementary_stream_configs, esc_link)
+    elementary_stream_create(s, esc);
 
-  pthread_mutex_unlock(&t->s_stream_mutex);
+  pthread_mutex_unlock(&s->s_stream_mutex);
 
-  if(t->s_grace_period != NULL)
-    timeout = t->s_grace_period(t);
+  if(scl->scl_grace_period != NULL)
+    timeout = scl->scl_grace_period(s);
 
-  gtimer_arm(&t->s_receive_timer, service_data_timeout, t, timeout);
+  gtimer_arm(&s->s_receive_timer, service_data_timeout, s, timeout);
   return 0;
 }
-
-/**
- *
- */
-#if 0
-static int
-dvb_extra_prio(th_dvb_adapter_t *tda)
-{
-  abort();
-  //  return tda->tda_hostconnection * 10;
-}
-#endif
 
 /**
  * Return prio for the given service
@@ -243,20 +235,7 @@ dvb_extra_prio(th_dvb_adapter_t *tda)
 static int
 service_get_prio(service_t *t)
 {
-  switch(t->s_type) {
-  case SERVICE_TYPE_DVB:
-    abort(); // return (t->s_scrambled ? 300 : 100) + 
-    //dvb_extra_prio(t->s_dvb_mux_instance->tdmi_adapter);
-
-  case SERVICE_TYPE_IPTV:
-    return 200;
-
-  case SERVICE_TYPE_V4L:
-    return 400;
-
-  default:
-    return 500;
-  }
+  return 200;
 }
 
 /**
@@ -271,9 +250,10 @@ service_get_prio(service_t *t)
  */
 
 static int
-service_get_quality(service_t *t)
+service_get_quality(service_t *s)
 {
-  return t->s_quality_index ? -MIN(t->s_quality_index(t) + 2, 0) : 0;
+  const service_class_t *scl = s->s_config->sc_class;
+  return scl->scl_quality_index ? -MIN(scl->scl_quality_index(s) + 2, 0) : 0;
 }
 
 
@@ -302,9 +282,10 @@ servicecmp(const void *A, const void *B)
  */
 service_t *
 service_find(channel_t *ch, unsigned int weight, const char *loginfo,
-	       int *errorp, service_t *skip)
+	     int *errorp, service_t *skip)
 {
-  service_t *t, **vec;
+  service_config_t *sc;
+  service_t *s, **vec;
   int cnt = 0, i, r, off;
   int err = 0;
 
@@ -312,32 +293,34 @@ service_find(channel_t *ch, unsigned int weight, const char *loginfo,
 
   /* First, sort all services in order */
 
-  LIST_FOREACH(t, &ch->ch_services, s_ch_link)
+  LIST_FOREACH(sc, &ch->ch_services, sc_ch_link)
     cnt++;
 
   vec = alloca(cnt * sizeof(service_t *));
   cnt = 0;
-  LIST_FOREACH(t, &ch->ch_services, s_ch_link) {
+  LIST_FOREACH(sc, &ch->ch_services, sc_ch_link) {
+    LIST_FOREACH(s, &sc->sc_services, s_config_link) {
 
-    if(!t->s_enabled) {
-      if(loginfo != NULL) {
-	tvhlog(LOG_NOTICE, "Service", "%s: Skipping \"%s\" -- not enabled",
-	       loginfo, service_nicename(t));
-	err = SM_CODE_SVC_NOT_ENABLED;
+      if(!s->s_enabled) {
+	if(loginfo != NULL) {
+	  tvhlog(LOG_NOTICE, "Service", "%s: Skipping \"%s\" -- not enabled",
+		 loginfo, service_displayname(s));
+	  err = SM_CODE_SVC_NOT_ENABLED;
+	}
+	continue;
       }
-      continue;
-    }
 
-    if(t->s_quality_index(t) < 10) {
-      if(loginfo != NULL) {
-	tvhlog(LOG_NOTICE, "Service", 
-	       "%s: Skipping \"%s\" -- Quality below 10%",
-	       loginfo, service_nicename(t));
-	err = SM_CODE_BAD_SIGNAL;
+      if(sc->sc_class->scl_quality_index(s) < 10) {
+	if(loginfo != NULL) {
+	  tvhlog(LOG_NOTICE, "Service", 
+		 "%s: Skipping \"%s\" -- Quality below 10%",
+		 loginfo, service_displayname(s));
+	  err = SM_CODE_BAD_SIGNAL;
+	}
+	continue;
       }
-      continue;
+      vec[cnt++] = s;
     }
-    vec[cnt++] = t;
   }
 
   /* Sort services, lower priority should come come earlier in the vector
@@ -350,7 +333,7 @@ service_find(channel_t *ch, unsigned int weight, const char *loginfo,
   // temporary. But it should resolve itself eventually
   if(skip != NULL) {
     for(i = 0; i < cnt; i++) {
-      if(skip == t)
+      if(skip == s)
 	break;
     }
     off = i + 1;
@@ -360,23 +343,23 @@ service_find(channel_t *ch, unsigned int weight, const char *loginfo,
 
   /* First, try all services without stealing */
   for(i = off; i < cnt; i++) {
-    t = vec[i];
-    if(t->s_status == SERVICE_RUNNING) 
-      return t;
-    if((r = service_start(t, 0, 0)) == 0)
-      return t;
+    s = vec[i];
+    if(s->s_status == SERVICE_RUNNING) 
+      return s;
+    if((r = service_start(s, 0, 0)) == 0)
+      return s;
     if(loginfo != NULL)
       tvhlog(LOG_DEBUG, "Service", "%s: Unable to use \"%s\" -- %s",
-	     loginfo, service_nicename(t), streaming_code2txt(r));
+	     loginfo, service_displayname(s), streaming_code2txt(r));
   }
 
   /* Ok, nothing, try again, but supply our weight and thus, try to steal
      transponders */
 
   for(i = off; i < cnt; i++) {
-    t = vec[i];
-    if((r = service_start(t, weight, 0)) == 0)
-      return t;
+    s = vec[i];
+    if((r = service_start(s, weight, 0)) == 0)
+      return s;
     *errorp = r;
   }
   if(err)
@@ -408,7 +391,7 @@ service_compute_weight(struct service_list *head)
   return w;
 }
 
-
+#if 0
 /**
  *
  */
@@ -428,51 +411,54 @@ service_ref(service_t *t)
 {
   atomic_add(&t->s_refcount, 1);
 }
+#endif
 
 
-
+#if 0
 /**
  * Destroy a service
  */
 void
-service_destroy(service_t *t)
+service_destroy(service_t *s)
 {
+  const service_class_t *sc = s->s_config->sc_class;
   elementary_stream_t *st;
-  th_subscription_t *s;
-  channel_t *ch = t->s_ch;
+  th_subscription_t *sub;
+  channel_t *ch = s->s_ch;
 
-  if(t->s_dtor != NULL)
-    t->s_dtor(t);
+  if(s->s_dtor != NULL)
+    s->s_dtor(s);
 
   lock_assert(&global_lock);
 
-  serviceprobe_delete(t);
+  serviceprobe_delete(s);
 
-  while((s = LIST_FIRST(&t->s_subscriptions)) != NULL) {
+  while((s = LIST_FIRST(&s->s_subscriptions)) != NULL) {
     subscription_unlink_service(s, SM_CODE_SOURCE_DELETED);
   }
 
-  if(t->s_ch != NULL) {
-    t->s_ch = NULL;
-    LIST_REMOVE(t, s_ch_link);
+  if(s->s_ch != NULL) {
+    s->s_ch = NULL;
+    LIST_REMOVE(s, s_ch_link);
   }
 
-  LIST_REMOVE(t, s_group_link);
-  LIST_REMOVE(t, s_hash_link);
+  LIST_REMOVE(s, s_group_link);
+  LIST_REMOVE(s, s_hash_link);
   
-  if(t->s_status != SERVICE_IDLE)
-    service_stop(t);
+  if(s->s_status != SERVICE_IDLE)
+    service_stop(s);
 
-  t->s_status = SERVICE_ZOMBIE;
+  s->s_status = SERVICE_ZOMBIE;
 
-  free(t->s_identifier);
-  free(t->s_svcname);
-  free(t->s_provider);
-  free(t->s_dvb_default_charset);
+  free(s->s_identifier);
+  free(s->s_svcname);
+  free(s->s_provider);
+  free(s->s_dvb_default_charset);
 
-  while((st = TAILQ_FIRST(&t->s_components)) != NULL) {
+  while((st = TAILQ_FIRST(&s->s_components)) != NULL) {
     TAILQ_REMOVE(&t->s_components, st, es_link);
-    free(st->es_nicename);
+    abort();
+    //    free(st->es_nicename);
     free(st);
   }
 
@@ -486,72 +472,62 @@ service_destroy(service_t *t)
       channel_delete(ch);
   }
 }
+#endif
 
 
 /**
- * Create and initialize a new service struct
+ *
  */
-service_t *
-service_create(const char *identifier, int type, int source_type)
+service_config_t *
+service_config_create(service_class_t *scl)
 {
-  unsigned int hash = tvh_strhash(identifier, SERVICE_HASH_WIDTH);
-  service_t *t = calloc(1, sizeof(service_t));
-
-  lock_assert(&global_lock);
-
-  pthread_mutex_init(&t->s_stream_mutex, NULL);
-  pthread_cond_init(&t->s_tss_cond, NULL);
-  t->s_identifier = strdup(identifier);
-  t->s_type = type;
-  t->s_source_type = source_type;
-  t->s_refcount = 1;
-  t->s_enabled = 1;
-  t->s_pcr_last = PTS_UNSET;
-  t->s_dvb_default_charset = NULL;
-  TAILQ_INIT(&t->s_components);
-
-  streaming_pad_init(&t->s_streaming_pad);
-
-  LIST_INSERT_HEAD(&servicehash[hash], t, s_hash_link);
-  return t;
-}
-
-/**
- * Find a service based on the given identifier
- */
-service_t *
-service_find_by_identifier(const char *identifier)
-{
-  service_t *t;
-  unsigned int hash = tvh_strhash(identifier, SERVICE_HASH_WIDTH);
-
-  lock_assert(&global_lock);
-
-  LIST_FOREACH(t, &servicehash[hash], s_hash_link)
-    if(!strcmp(t->s_identifier, identifier))
-      break;
-  return t;
+  service_config_t *sc = calloc(1, sizeof(service_config_t));
+  sc->sc_class = scl;
+  return sc;
 }
 
 
 /**
  *
  */
+service_t *
+service_create(service_config_t *sc)
+{
+  service_t *s = calloc(1, sizeof(service_t));
+
+  lock_assert(&global_lock);
+
+  pthread_mutex_init(&s->s_stream_mutex, NULL);
+  pthread_cond_init(&s->s_tss_cond, NULL);
+  s->s_enabled = 1;
+  s->s_pcr_last = PTS_UNSET;
+
+  streaming_pad_init(&s->s_streaming_pad);
+  LIST_INSERT_HEAD(&sc->sc_services, s, s_config_link);
+  return s;
+}
+
+
+#if 0
+/**
+ *
+ */
 static void 
-service_stream_make_nicename(service_t *t, elementary_stream_t *st)
+elementary_stream_make_nicename(service_t *s,
+				elementary_stream_config_t *esc)
 {
   char buf[200];
-  if(st->es_pid != -1)
+  if(esc->esc_pid != -1)
     snprintf(buf, sizeof(buf), "%s: %s @ #%d", 
-	     service_nicename(t),
-	     streaming_component_type2txt(st->es_type), st->es_pid);
+	     service_displayname(s),
+	     streaming_component_type2txt(esc->esc_type), esc->esc_pid);
   else
     snprintf(buf, sizeof(buf), "%s: %s", 
-	     service_nicename(t),
-	     streaming_component_type2txt(st->es_type));
+	     service_displayname(s),
+	     streaming_component_type2txt(esc->esc_type));
 
-  free(st->es_nicename);
-  st->es_nicename = strdup(buf);
+  free(esc->esc_displayname);
+  esc->esc_displayname = strdup(buf);
 }
 
 
@@ -584,67 +560,51 @@ service_make_nicename(service_t *t)
     service_stream_make_nicename(t, st);
 }
 
+#endif
 
 /**
  * Add a new stream to a service
  */
-elementary_stream_t *
-service_stream_create(service_t *t, int pid,
-			streaming_component_type_t type)
+elementary_stream_config_t *
+elementary_stream_config_create(service_config_t *sc, int pid,
+				streaming_component_type_t type)
 {
-  elementary_stream_t *st;
+  elementary_stream_config_t *esc;
   int i = 0;
   int idx = 0;
-  lock_assert(&t->s_stream_mutex);
 
-  TAILQ_FOREACH(st, &t->s_components, es_link) {
-    if(st->es_index > idx)
-      idx = st->es_index;
+  TAILQ_FOREACH(esc, &sc->sc_elementary_stream_configs, esc_link) {
+    if(esc->esc_index > idx)
+      idx = esc->esc_index;
     i++;
-    if(pid != -1 && st->es_pid == pid)
-      return st;
+    if(pid != -1 && esc->esc_pid == pid)
+      return esc;
   }
 
-  st = calloc(1, sizeof(elementary_stream_t));
-  st->es_index = idx + 1;
-  st->es_type = type;
+  esc = calloc(1, sizeof(elementary_stream_config_t));
+  esc->esc_index = idx + 1;
+  esc->esc_type = type;
 
-  TAILQ_INSERT_TAIL(&t->s_components, st, es_link);
-  st->es_service = t;
+  TAILQ_INSERT_TAIL(&sc->sc_elementary_stream_configs, esc, esc_link);
 
-  st->es_pid = pid;
-  st->es_demuxer_fd = -1;
-
-  avgstat_init(&st->es_rate, 10);
-  avgstat_init(&st->es_cc_errors, 10);
-
-  service_stream_make_nicename(t, st);
-
-  if(t->s_flags & S_DEBUG)
-    tvhlog(LOG_DEBUG, "service", "Add stream %s", st->es_nicename);
-
-  if(t->s_status == SERVICE_RUNNING)
-    stream_init(st);
-
-  return st;
+  esc->esc_pid = pid;
+  return esc;
 }
 
 
-
 /**
- * Add a new stream to a service
+ * Find an ES based on PID
  */
-elementary_stream_t *
-service_stream_find(service_t *t, int pid)
+elementary_stream_config_t *
+service_stream_find(service_config_t *sc, int pid)
 {
-  elementary_stream_t *st;
+  elementary_stream_config_t *esc;
  
-  lock_assert(&t->s_stream_mutex);
+  lock_assert(&global_lock);
 
-  TAILQ_FOREACH(st, &t->s_components, es_link) {
-    if(st->es_pid == pid)
-      return st;
-  }
+  TAILQ_FOREACH(esc, &sc->sc_elementary_stream_configs, esc_link)
+    if(esc->esc_pid == pid)
+      break;
   return NULL;
 }
 
@@ -654,31 +614,24 @@ service_stream_find(service_t *t, int pid)
  *
  */
 void
-service_map_channel(service_t *t, channel_t *ch, int save)
+service_map_channel(service_config_t *sc, channel_t *ch)
 {
   lock_assert(&global_lock);
 
-  if(t->s_ch != NULL) {
-    LIST_REMOVE(t, s_ch_link);
-    htsp_channel_update(t->s_ch);
-    t->s_ch = NULL;
+  if(sc->sc_ch != NULL) {
+    LIST_REMOVE(sc, sc_ch_link);
+    htsp_channel_update(sc->sc_ch);
+    sc->sc_ch = NULL;
   }
-
 
   if(ch != NULL) {
-
-    avgstat_init(&t->s_cc_errors, 3600);
-    avgstat_init(&t->s_rate, 10);
-
-    t->s_ch = ch;
-    LIST_INSERT_HEAD(&ch->ch_services, t, s_ch_link);
-    htsp_channel_update(t->s_ch);
+    sc->sc_ch = ch;
+    LIST_INSERT_HEAD(&ch->ch_services, sc, sc_ch_link);
+    htsp_channel_update(sc->sc_ch);
   }
-
-  if(save)
-    t->s_config_save(t);
 }
 
+#if 0
 /**
  *
  */
@@ -694,6 +647,7 @@ service_set_dvb_default_charset(service_t *t, const char *dvb_default_charset)
   t->s_dvb_default_charset = strdup(dvb_default_charset);
   t->s_config_save(t);
 }
+#endif
 
 
 /**
@@ -724,31 +678,31 @@ static struct strtab stypetab[] = {
 };
 
 const char *
-service_servicetype_txt(service_t *t)
+service_servicetype_txt(const service_config_t *sc)
 {
-  return val2str(t->s_servicetype, stypetab) ?: "Other";
+  return val2str(sc->sc_servicetype, stypetab) ?: "Other";
 }
 
 /**
  *
  */
 int
-service_is_tv(service_t *t)
+service_is_tv(const service_config_t *sc)
 {
   return 
-    t->s_servicetype == ST_SDTV    ||
-    t->s_servicetype == ST_HDTV    ||
-    t->s_servicetype == ST_AC_SDTV ||
-    t->s_servicetype == ST_AC_HDTV;
+    sc->sc_servicetype == ST_SDTV    ||
+    sc->sc_servicetype == ST_HDTV    ||
+    sc->sc_servicetype == ST_AC_SDTV ||
+    sc->sc_servicetype == ST_AC_HDTV;
 }
 
 /**
  *
  */
 int
-service_is_radio(service_t *t)
+service_is_radio(const service_config_t *sc)
 {
-  return t->s_servicetype == ST_RADIO;
+  return sc->sc_servicetype == ST_RADIO;
 }
 
 /**
@@ -771,7 +725,7 @@ service_set_streaming_status_flags(service_t *t, int set)
   t->s_streaming_status = n;
 
   tvhlog(LOG_DEBUG, "Service", "%s: Status changed to %s%s%s%s%s%s%s",
-	 service_nicename(t),
+	 "FIXME"__FILE__,
 	 n & TSS_INPUT_HARDWARE ? "[Hardware input] " : "",
 	 n & TSS_INPUT_SERVICE  ? "[Input on service] " : "",
 	 n & TSS_MUX_PACKETS    ? "[Demuxed packets] " : "",
@@ -795,25 +749,28 @@ service_set_streaming_status_flags(service_t *t, int set)
  * (i.e. an AC3 stream disappears, etc)
  */
 void
-service_restart(service_t *t, int had_components)
+service_restart(service_t *s, int had_components)
 {
   streaming_message_t *sm;
-  lock_assert(&t->s_stream_mutex);
+  const service_config_t *sc = s->s_config;
+  const service_class_t *scl = sc->sc_class;
+
+  lock_assert(&s->s_stream_mutex);
 
   if(had_components) {
     sm = streaming_msg_create_code(SMT_STOP, SM_CODE_SOURCE_RECONFIGURED);
-    streaming_pad_deliver(&t->s_streaming_pad, sm);
+    streaming_pad_deliver(&s->s_streaming_pad, sm);
     streaming_msg_free(sm);
   }
 
-  if(t->s_refresh_feed != NULL)
-    t->s_refresh_feed(t);
+  if(scl->scl_refresh != NULL)
+    scl->scl_refresh(s);
 
-  if(TAILQ_FIRST(&t->s_components) != NULL) {
+  if(TAILQ_FIRST(&sc->sc_elementary_stream_configs) != NULL) {
 
     sm = streaming_msg_create_data(SMT_START, 
-				   service_build_stream_start(t));
-    streaming_pad_deliver(&t->s_streaming_pad, sm);
+				   service_build_stream_start(s));
+    streaming_pad_deliver(&s->s_streaming_pad, sm);
     streaming_msg_free(sm);
   }
 }
@@ -823,15 +780,16 @@ service_restart(service_t *t, int had_components)
  * Generate a message containing info about all components
  */
 streaming_start_t *
-service_build_stream_start(service_t *t)
+service_build_stream_start(service_t *s)
 {
-  elementary_stream_t *st;
   int n = 0;
   streaming_start_t *ss;
+  const service_config_t *sc = s->s_config;
+  const elementary_stream_config_t *esc;
 
-  lock_assert(&t->s_stream_mutex);
-  
-  TAILQ_FOREACH(st, &t->s_components, es_link)
+  lock_assert(&global_lock);
+
+  TAILQ_FOREACH(esc, &sc->sc_elementary_stream_configs, esc_link)
     n++;
 
   ss = calloc(1, sizeof(streaming_start_t) + 
@@ -840,22 +798,23 @@ service_build_stream_start(service_t *t)
   ss->ss_num_components = n;
   
   n = 0;
-  TAILQ_FOREACH(st, &t->s_components, es_link) {
+  TAILQ_FOREACH(esc, &sc->sc_elementary_stream_configs, esc_link) {
     streaming_start_component_t *ssc = &ss->ss_components[n++];
-    ssc->ssc_index = st->es_index;
-    ssc->ssc_type  = st->es_type;
-    memcpy(ssc->ssc_lang, st->es_lang, 4);
-    ssc->ssc_composition_id = st->es_composition_id;
-    ssc->ssc_ancillary_id = st->es_ancillary_id;
-    ssc->ssc_pid = st->es_pid;
-    ssc->ssc_width = st->es_width;
-    ssc->ssc_height = st->es_height;
+
+    ssc->ssc_index = esc->esc_index;
+    ssc->ssc_type  = esc->esc_type;
+    memcpy(ssc->ssc_lang, esc->esc_lang, 4);
+    ssc->ssc_composition_id = esc->esc_composition_id;
+    ssc->ssc_ancillary_id = esc->esc_ancillary_id;
+    ssc->ssc_pid = esc->esc_pid;
+    ssc->ssc_width = esc->esc_width;
+    ssc->ssc_height = esc->esc_height;
   }
 
-  t->s_setsourceinfo(t, &ss->ss_si);
+  sc->sc_class->scl_getsourceinfo(s, &ss->ss_si);
 
   ss->ss_refcount = 1;
-  ss->ss_pcr_pid = t->s_pcr_pid;
+  ss->ss_pcr_pid = sc->sc_pcr_pid;
   return ss;
 }
 
@@ -870,7 +829,7 @@ service_set_enable(service_t *t, int enabled)
     return;
 
   t->s_enabled = enabled;
-  t->s_config_save(t);
+  abort(); // t->s_config_save(t);
   subscription_reschedule();
 }
 
@@ -899,6 +858,7 @@ service_request_save(service_t *t, int restart)
   pthread_mutex_unlock(&pending_save_mutex);
 }
 
+#if 0
 
 /**
  *
@@ -939,6 +899,7 @@ service_saver(void *aux)
   }
   return NULL;
 }
+#endif
 
 
 /**
@@ -947,11 +908,13 @@ service_saver(void *aux)
 void
 service_init(void)
 {
+#if 0
   pthread_t tid;
   TAILQ_INIT(&pending_save_queue);
   pthread_mutex_init(&pending_save_mutex, NULL);
   pthread_cond_init(&pending_save_cond, NULL);
   pthread_create(&tid, NULL, service_saver, NULL);
+#endif
 }
 
 
@@ -983,21 +946,6 @@ service_source_info_copy(source_info_t *dst, const source_info_t *src)
 #undef COPY
 }
 
-
-/**
- *
- */
-const char *
-service_nicename(service_t *t)
-{
-  return t->s_nicename;
-}
-
-const char *
-service_component_nicename(elementary_stream_t *st)
-{
-  return st->es_nicename;
-}
 
 const char *
 service_tss2text(int flags)
@@ -1045,7 +993,7 @@ tss2errcode(int tss)
   return SM_CODE_OK;
 }
 
-
+#if 0
 /**
  *
  */
@@ -1090,4 +1038,6 @@ service_get_signal_status(service_t *t, signal_status_t *status)
 {
   abort();
 }
+
+#endif
 

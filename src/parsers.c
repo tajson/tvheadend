@@ -122,40 +122,40 @@ static int parse_pes_header(service_t *t, elementary_stream_t *st,
  * Parse raw mpeg data
  */
 void
-parse_mpeg_ts(service_t *t, elementary_stream_t *st, const uint8_t *data, 
+parse_mpeg_ts(service_t *t, elementary_stream_t *es, const uint8_t *data, 
 	      int len, int start, int err)
 {
   
   if(err)
-    sbuf_err(&st->es_buf);
+    sbuf_err(&es->es_buf);
 
-  switch(st->es_type) {
+  switch(es->es_config.esc_type) {
   case SCT_MPEG2VIDEO:
-    parse_sc(t, st, data, len, parse_mpeg2video);
+    parse_sc(t, es, data, len, parse_mpeg2video);
     break;
 
   case SCT_H264:
-    parse_sc(t, st, data, len, parse_h264);
+    parse_sc(t, es, data, len, parse_h264);
     break;
 
   case SCT_MPEG2AUDIO:
-    parse_sc(t, st, data, len, parse_mpa);
+    parse_sc(t, es, data, len, parse_mpa);
     break;
 
   case SCT_AC3:
-    parse_sc(t, st, data, len, parse_ac3);
+    parse_sc(t, es, data, len, parse_ac3);
     break;
 
   case SCT_EAC3:
-    parse_sc(t, st, data, len, parse_eac3);
+    parse_sc(t, es, data, len, parse_eac3);
     break;
 
   case SCT_DVBSUB:
-    parse_subtitles(t, st, data, len, start);
+    parse_subtitles(t, es, data, len, start);
     break;
     
   case SCT_AAC:
-    parse_aac(t, st, data, len, start);
+    parse_aac(t, es, data, len, start);
     break;
 
   default:
@@ -187,7 +187,7 @@ parse_mpeg_ps(service_t *t, elementary_stream_t *st, uint8_t *data, int len)
   if(len < 1)
     return;
 
-  switch(st->es_type) {
+  switch(st->es_config.esc_type) {
   case SCT_MPEG2AUDIO:
     sbuf_append(&st->es_buf_a, data, len);
     parse_mpa2(t, st);
@@ -810,6 +810,8 @@ parse_mpeg2video_pic_start(service_t *t, elementary_stream_t *st, int *frametype
 void
 parser_set_stream_vsize(elementary_stream_t *st, int width, int height)
 {
+  abort();
+  /*
   int need_save = 0;
 
   if(st->es_width == 0 && st->es_height == 0) {
@@ -831,6 +833,7 @@ parser_set_stream_vsize(elementary_stream_t *st, int width, int height)
     st->es_height = height;
     service_request_save(st->es_service, 1);
   }
+  */
 }
 
 
@@ -1239,7 +1242,7 @@ parse_subtitles(service_t *t, elementary_stream_t *st, const uint8_t *data,
 static void
 parser_deliver(service_t *t, elementary_stream_t *st, th_pkt_t *pkt)
 {
-  if(SCT_ISAUDIO(st->es_type) && pkt->pkt_pts != PTS_UNSET &&
+  if(SCT_ISAUDIO(st->es_config.esc_type) && pkt->pkt_pts != PTS_UNSET &&
      (t->s_current_pts == PTS_UNSET ||
       pkt->pkt_pts > t->s_current_pts ||
       pkt->pkt_pts < t->s_current_pts - 180000))
@@ -1266,7 +1269,7 @@ parser_deliver(service_t *t, elementary_stream_t *st, th_pkt_t *pkt)
   service_set_streaming_status_flags(t, TSS_PACKETS);
 
   /* Forward packet */
-  pkt->pkt_componentindex = st->es_index;
+  pkt->pkt_componentindex = st->es_config.esc_index;
 
   streaming_message_t *sm = streaming_msg_create_pkt(pkt);
 

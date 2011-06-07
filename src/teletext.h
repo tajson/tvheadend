@@ -19,6 +19,9 @@
 #ifndef TELETEXT_H
 #define TELETEXT_H
 
+struct service;
+struct elementary_stream;
+
 void teletext_input(struct service *t, struct elementary_stream *st,
 		    const uint8_t *tsb);
 

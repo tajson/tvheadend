@@ -1,3 +1,4 @@
+#if 0
 /*
  *  Output functions for fixed multicast streaming
  *  Copyright (C) 2007 Andreas Öman
@@ -226,3 +227,4 @@ serviceprobe_init(void)
   TAILQ_INIT(&serviceprobe_queue);
   pthread_create(&ptid, NULL, serviceprobe_thread, NULL);
 }
+#endif

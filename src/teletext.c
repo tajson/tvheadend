@@ -260,7 +260,7 @@ update_tt_clock(service_t *t, const uint8_t *buf)
 
 
 static void
-extract_subtitle(service_t *t, elementary_stream_t *st,
+extract_subtitle(service_t *t, elementary_stream_t *es,
 		 tt_mag_t *ttm, int64_t pts)
 {
   int i, j, off = 0;
@@ -299,20 +299,20 @@ extract_subtitle(service_t *t, elementary_stream_t *st,
       sub[off++] = '\n';
   }
 
-  if(off == 0 && st->es_blank)
+  if(off == 0 && es->es_blank)
     return; // Avoid multiple blank subtitles
 
-  st->es_blank = !off;
+  es->es_blank = !off;
 
-  if(st->es_curpts == pts)
+  if(es->es_curpts == pts)
     pts++; // Avoid non-monotonic PTS
 
-  st->es_curpts = pts;
+  es->es_curpts = pts;
 
   sub[off++] = 0;
   
   th_pkt_t *pkt = pkt_alloc(sub, off, pts, pts);
-  pkt->pkt_componentindex = st->es_index;
+  pkt->pkt_componentindex = es->es_config.esc_index;
 
   streaming_message_t *sm = streaming_msg_create_pkt(pkt);
   streaming_pad_deliver(&t->s_streaming_pad, sm);
@@ -356,15 +356,15 @@ dump_page(tt_mag_t *ttm)
 static void
 tt_subtitle_deliver(service_t *t, elementary_stream_t *parent, tt_mag_t *ttm)
 {
-  elementary_stream_t *st;
+  elementary_stream_t *es;
 
   if(ttm->ttm_current_pts == PTS_UNSET)
     return;
 
-  TAILQ_FOREACH(st, &t->s_components, es_link) {
-     if(parent->es_pid == st->es_parent_pid &&
-	ttm->ttm_curpage == st->es_pid -  PID_TELETEXT_BASE) {
-       extract_subtitle(t, st, ttm, ttm->ttm_current_pts);
+  LIST_FOREACH(es, &t->s_elementary_streams, es_link) {
+     if(parent->es_config.esc_pid == es->es_config.esc_parent_pid &&
+	ttm->ttm_curpage == es->es_config.esc_pid -  PID_TELETEXT_BASE) {
+       extract_subtitle(t, es, ttm, ttm->ttm_current_pts);
      }
   }
 }

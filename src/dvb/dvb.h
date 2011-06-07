@@ -360,4 +360,15 @@ dvb_satconf_t *dvb_satconf_entry_find(dvb_adapter_t *tda,
 void dvb_lnb_get_frequencies(const char *id, 
 			     int *f_low, int *f_hi, int *f_switch);
 
+
+
+/**
+ *
+ */
+typedef struct dvb_network {
+
+
+
+} dvb_network_t;
+
 #endif /* DVB_H_ */

@@ -20,6 +20,7 @@
 #define PARSERS_H
 
 #include "packet.h"
+#include "service.h"
 
 void parse_mpeg_ts(struct service *t, struct elementary_stream *st,
 		   const uint8_t *data, 

@@ -1,3 +1,4 @@
+#if 0
 /*
  *  Multicasted IPTV Input
  *  Copyright (C) 2007 Andreas Öman
@@ -612,3 +613,4 @@ iptv_input_init(void)
   pthread_mutex_init(&iptv_recvmutex, NULL);
   iptv_service_load();
 }
+#endif

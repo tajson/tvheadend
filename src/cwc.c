@@ -1,3 +1,4 @@
+#if 0
 /*
  *  tvheadend, CWC interface
  *  Copyright (C) 2007 Andreas Öman
@@ -2245,3 +2246,4 @@ crypt_md5(const char *pw, const char *salt)
 
     return passwd;
 }
+#endif

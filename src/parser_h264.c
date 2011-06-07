@@ -411,8 +411,8 @@ h264_decode_slice_header(elementary_stream_t *st, bitstream_t *bs, int *pkttype,
 
   if(p->sps[sps_id].aspect_num && p->sps[sps_id].aspect_den) {
 
-    int w = p->sps[sps_id].aspect_num * st->es_width;
-    int h = p->sps[sps_id].aspect_den * st->es_height;
+    int w = p->sps[sps_id].aspect_num * st->es_config.esc_width;
+    int h = p->sps[sps_id].aspect_den * st->es_config.esc_height;
 
     if(w && h) { 
       int d = gcd(w, h);

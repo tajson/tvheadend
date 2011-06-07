@@ -1,3 +1,4 @@
+#if 0
 /*
  *  tvheadend, MPEG transport stream demuxer
  *  Copyright (C) 2007 Andreas Öman
@@ -52,7 +53,7 @@ got_section(const uint8_t *data, size_t len, void *opaque)
   elementary_stream_t *st = opaque;
   service_t *t = st->es_service;
 
-  if(st->es_type == SCT_CA) {
+  if(st->es_config.esc_type == SCT_CA) {
     LIST_FOREACH(td, &t->s_descramblers, td_service_link)
       td->td_table(td, t, st, data, len);
   } else if(st->es_got_section != NULL) {
@@ -289,3 +290,4 @@ ts_remux(service_t *t, const uint8_t *src)
   sm.sm_data = tsb;
   streaming_pad_deliver(&t->s_streaming_pad, &sm);
 }
+#endif

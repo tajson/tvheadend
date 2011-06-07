@@ -23,6 +23,11 @@
 
 #include "htsmsg.h"
 
+LIST_HEAD(elementary_stream_list, elementary_stream);
+TAILQ_HEAD(elementary_stream_config_queue, elementary_stream_config);
+
+struct service;
+struct service_config;
 
 
 /**
@@ -53,42 +58,78 @@ typedef void (pid_section_callback_t)(struct service *t,
 				      const uint8_t *section, int section_len);
 
 
-LIST_HEAD(caid_list, caid);
+#define SERVICE_MAX_CAIDS 16
+
+
 /**
  *
  */
 typedef struct caid {
-  LIST_ENTRY(caid) link;
-
-  uint8_t delete_me;
   uint16_t caid;
+  uint8_t delete_me;
   uint32_t providerid;
-
 } caid_t;
 
+
 /**
- * Stream, one media component for a service.
+ * Configuration for an ES
+ * This pretty much includes everything that's not part of 
+ * ordinary streaming.
+ *
+ * Ie. stuff that can be obtained from PMT updates
+ */
+typedef struct elementary_stream_config {
+  TAILQ_ENTRY(elementary_stream_config) esc_link;
+  streaming_component_type_t esc_type;
+
+
+  int esc_index;  // Unique index within the stream
+
+  char esc_lang[4];           /* ISO 639 3-letter language code */
+  uint16_t esc_composition_id;
+  uint16_t esc_ancillary_id;
+
+  int16_t esc_pid;
+  uint16_t esc_parent_pid;    /* For subtitle streams originating from 
+				 a teletext stream. this is the pid
+				 of the teletext stream */
+  
+  int esc_width;
+  int esc_height;
+
+  /* CA ID's on this stream */
+  caid_t esc_caids[SERVICE_MAX_CAIDS];
+
+  /* Temporary flag for deleting streams */
+  int esc_delete_me;
+
+  /* A user friendly displayable name */
+  char *esc_displayname;
+
+  /* Set if we should verify CRC on tables */
+  int esc_section_docrc;
+  pid_section_callback_t *esc_got_section;
+  void *esc_got_section_opaque;
+  
+} elementary_stream_config_t;
+
+
+
+/**
+ * ES
  */
 typedef struct elementary_stream {
 
-  TAILQ_ENTRY(elementary_stream) es_link;
-  int es_position;
+  LIST_ENTRY(elementary_stream) es_link;
+
+  elementary_stream_config_t es_config;
+
   struct service *es_service;
 
-  streaming_component_type_t es_type;
-  int es_index;
 
   uint16_t es_aspect_num;
   uint16_t es_aspect_den;
 
-  char es_lang[4];           /* ISO 639 3-letter language code */
-  uint16_t es_composition_id;
-  uint16_t es_ancillary_id;
-
-  int16_t es_pid;
-  uint16_t es_parent_pid;    /* For subtitle streams originating from 
-				a teletext stream. this is the pid
-				of the teletext stream */
 
   uint8_t es_cc;             /* Last CC */
   uint8_t es_cc_valid;       /* Is CC valid at all? */
@@ -100,9 +141,6 @@ typedef struct elementary_stream {
   int es_peak_presentation_delay; /* Max seen diff. of DTS and PTS */
 
   struct psi_section *es_section;
-  int es_section_docrc;           /* Set if we should verify CRC on tables */
-  pid_section_callback_t *es_got_section;
-  void *es_got_section_opaque;
 
   /* PCR recovery */
 
@@ -138,28 +176,19 @@ typedef struct elementary_stream {
   int64_t es_prevdts;
   int64_t es_nextdts;
   int es_frame_duration;
-  int es_width;
-  int es_height;
 
   int es_meta_change;
 
-  /* CA ID's on this stream */
-  struct caid_list es_caids;
 
   int es_vbv_size;        /* Video buffer size (in bytes) */
   int es_vbv_delay;       /* -1 if CBR */
 
-  /* */
-
-  int es_delete_me;      /* Temporary flag for deleting streams */
 
   /* Error log limiters */
 
   loglimiter_t es_loglimit_cc;
   loglimiter_t es_loglimit_pes;
   
-  char *es_nicename;
-
   /* Teletext subtitle */ 
   char es_blank; // Last subtitle was blank
 
@@ -170,15 +199,110 @@ typedef struct elementary_stream {
 /**
  *
  */
-typedef struct service {
+typedef struct service_class {
 
-  LIST_ENTRY(service) s_hash_link;
+
+  //  void (*scl_config_save)(struct service_config *sc);
+
+  int (*scl_start)(struct service *t, unsigned int weight,
+		      int force_start);
+  
+  void (*scl_refresh)(struct service *t);
+
+  void (*scl_stop)(struct service *t);
+
+  void (*scl_getsourceinfo)(struct service *t, struct source_info *si);
+
+  int (*scl_quality_index)(struct service *t);
+
+  int (*scl_grace_period)(struct service *t);
+
+  void (*scl_dtor)(struct service *t);
+
+  
+
+} service_class_t;
+
+
+/**
+ * Configuration for a service
+ */
+typedef struct service_config {
+
+  /**
+   * Class
+   */
+  const service_class_t *sc_class;
+
+  /**
+   * Channel mapping
+   */
+  LIST_ENTRY(service_config) sc_ch_link;
+  struct channel *sc_ch;
+
+  /**
+   * Elementary streams
+   */
+  struct elementary_stream_config_queue sc_elementary_stream_configs;
+
+
+  /**
+   * PID carrying the programs PCR.
+   * XXX: We don't support transports that does not carry
+   * the PCR in one of the content streams.
+   */
+  uint16_t sc_pcr_pid;
+
+  /**
+   * PID for the PMT of this MPEG-TS stream.
+   */
+  uint16_t sc_pmt_pid;
+
+  /**
+   * Service ID according to EN 300 468
+   */
+  uint16_t sc_dvb_service_id;
+
+  uint16_t sc_channel_number;
+
+  /**
+   * Service name (eg. DVB service name as specified by EN 300 468)
+   */
+  char *sc_svcname;
+
+  /**
+   * Provider name (eg. DVB provider name as specified by EN 300 468)
+   */
+  char *sc_provider;
 
   enum {
-    SERVICE_TYPE_DVB,
-    SERVICE_TYPE_IPTV,
-    SERVICE_TYPE_V4L,
-  } s_type;
+    /* Service types defined in EN 300 468 */
+
+    ST_SDTV       = 0x1,    /* SDTV (MPEG2) */
+    ST_RADIO      = 0x2,
+    ST_HDTV       = 0x11,   /* HDTV (MPEG2) */
+    ST_AC_SDTV    = 0x16,   /* Advanced codec SDTV */
+    ST_AC_HDTV    = 0x19,   /* Advanced codec HDTV */
+  } sc_servicetype;
+
+  /**
+   * Name usable for displaying to user
+   */
+  char *sc_displayname;
+
+  struct service_list sc_services;
+
+} service_config_t;
+
+
+/**
+ *
+ */
+typedef struct service {
+
+  service_config_t *s_config;
+  LIST_ENTRY(service) s_config_link;
+
 
   enum {
     /**
@@ -209,42 +333,17 @@ typedef struct service {
   } s_status;
 
   /**
-   * Refcount, operated using atomic.h ops.
-   */ 
-  int s_refcount;
-
-  /**
    *
    */
   int s_flags;
 
 #define S_DEBUG 0x1
 
-  /**
-   * Source type is used to determine if an output requesting
-   * MPEG-TS can shortcut all the parsing and remuxing.
-   */ 
-  enum {
-    S_MPEG_TS,
-    S_OTHER,
-  } s_source_type;
-
  
-  /**
-   * PID carrying the programs PCR.
-   * XXX: We don't support transports that does not carry
-   * the PCR in one of the content streams.
-   */
-  uint16_t s_pcr_pid;
 
   /**
-   * PID for the PMT of this MPEG-TS stream.
-   */
-  uint16_t s_pmt_pid;
-
-  /**
-   * Set if transport is enabled (the default).  If disabled it should
-   * not be considered when chasing for available transports during
+   * Set if service is enabled (the default).  If disabled it should
+   * not be considered when chasing for available services during
    * subscription scheduling.
    */
   int s_enabled;
@@ -261,64 +360,11 @@ typedef struct service {
 
   LIST_HEAD(, th_subscription) s_subscriptions;
 
-  int (*s_start_feed)(struct service *t, unsigned int weight,
-			int force_start);
-
-  void (*s_refresh_feed)(struct service *t);
-
-  void (*s_stop_feed)(struct service *t);
-
-  void (*s_config_save)(struct service *t);
-
-  void (*s_setsourceinfo)(struct service *t, struct source_info *si);
-
-  int (*s_quality_index)(struct service *t);
-
-  int (*s_grace_period)(struct service *t);
-
-  void (*s_dtor)(struct service *t);
-
   /*
    * Per source type structs
    */
   struct th_dvb_mux_instance *s_dvb_mux_instance;
 
-  /**
-   * Unique identifer (used for storing on disk, etc)
-   */
-  char *s_identifier;
-
-  /**
-   * Name usable for displaying to user
-   */
-  char *s_nicename;
-
-  /**
-   * Service ID according to EN 300 468
-   */
-  uint16_t s_dvb_service_id;
-
-  uint16_t s_channel_number;
-
-  /**
-   * Service name (eg. DVB service name as specified by EN 300 468)
-   */
-  char *s_svcname;
-
-  /**
-   * Provider name (eg. DVB provider name as specified by EN 300 468)
-   */
-  char *s_provider;
-
-  enum {
-    /* Service types defined in EN 300 468 */
-
-    ST_SDTV       = 0x1,    /* SDTV (MPEG2) */
-    ST_RADIO      = 0x2,
-    ST_HDTV       = 0x11,   /* HDTV (MPEG2) */
-    ST_AC_SDTV    = 0x16,   /* Advanced codec SDTV */
-    ST_AC_HDTV    = 0x19,   /* Advanced codec HDTV */
-  } s_servicetype;
 
 
   /**
@@ -328,17 +374,6 @@ typedef struct service {
   int s_tt_rundown_content_length;
   time_t s_tt_clock;   /* Network clock as determined by teletext decoder */
  
-  /**
-   * Channel mapping
-   */
-  LIST_ENTRY(service) s_ch_link;
-  struct channel *s_ch;
-
-  /**
-   * Service probe, see serviceprobe.c for details
-   */
-  int s_sp_onqueue;
-  TAILQ_ENTRY(service) s_sp_link;
 
   /**
    * Pending save.
@@ -462,7 +497,7 @@ typedef struct service {
   /**
    * List of all components.
    */
-  struct elementary_stream_queue s_components;
+  struct elementary_stream_list s_elementary_streams;
 
 
   /**
@@ -494,8 +529,9 @@ unsigned int service_compute_weight(struct service_list *head);
 
 int service_start(service_t *t, unsigned int weight, int force_start);
 
-service_t *service_create(const char *identifier, int type,
-				 int source_type);
+service_config_t *service_config_create(service_class_t *scl);
+
+service_t *service_create(service_config_t *sc);
 
 void service_unref(service_t *t);
 
@@ -503,26 +539,26 @@ void service_ref(service_t *t);
 
 service_t *service_find_by_identifier(const char *identifier);
 
-void service_map_channel(service_t *t, struct channel *ch, int save);
+void service_map_channel(service_config_t *sc, struct channel *ch);
 
 service_t *service_find(struct channel *ch, unsigned int weight,
 			const char *loginfo, int *errorp,
 			service_t *skip);
 
-elementary_stream_t *service_stream_find(service_t *t, int pid);
+elementary_stream_config_t *service_stream_find(service_config_t *sc, int pid);
 
 elementary_stream_t *service_stream_create(service_t *t, int pid,
-				     streaming_component_type_t type);
+					   streaming_component_type_t type);
 
 void service_set_priority(service_t *t, int prio);
 
 void service_settings_write(service_t *t);
 
-const char *service_servicetype_txt(service_t *t);
+const char *service_servicetype_txt(const service_config_t *sc);
 
-int service_is_tv(service_t *t);
+int service_is_tv(const service_config_t *t);
 
-int service_is_radio(service_t *t);
+int service_is_radio(const service_config_t *t);
 
 void service_destroy(service_t *t);
 
@@ -532,13 +568,14 @@ void service_remove_subscriber(service_t *t, struct th_subscription *s,
 void service_set_streaming_status_flags(service_t *t, int flag);
 
 struct streaming_start;
-struct streaming_start *service_build_stream_start(service_t *t);
+struct streaming_start *service_build_stream_start(service_t *sc);
 
 void service_set_enable(service_t *t, int enabled);
 
 void service_restart(service_t *t, int had_components);
 
-void service_stream_destroy(service_t *t, elementary_stream_t *st);
+void service_stream_destroy(service_config_t *sc,
+			    elementary_stream_config_t *esc);
 
 void service_request_save(service_t *t, int restart);
 
@@ -548,7 +585,7 @@ void service_source_info_copy(source_info_t *dst, const source_info_t *src);
 
 void service_make_nicename(service_t *t);
 
-const char *service_nicename(service_t *t);
+const char *service_displayname(service_t *sc);
 
 const char *service_component_nicename(elementary_stream_t *st);
 
@@ -568,5 +605,9 @@ uint16_t service_get_encryption(service_t *t);
 int service_get_signal_status(service_t *t, signal_status_t *status);
 
 void service_set_dvb_default_charset(service_t *t, const char *dvb_default_charset);
+
+
+elementary_stream_config_t *elementary_stream_config_create(service_config_t *sc, int pid,
+							    streaming_component_type_t type);
 
 #endif // SERVICE_H__
