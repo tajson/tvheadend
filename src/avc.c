@@ -73,7 +73,7 @@ static int
 avc_parse_nal_units_buf(const uint8_t *buf_in, uint8_t **buf, int *size)
 {
   sbuf_t sb;
-  sbuf_reset(&sb);
+  sbuf_init(&sb);
   avc_parse_nal_units(&sb, buf_in, *size);
 
   free(*buf);
@@ -190,20 +190,15 @@ avc_convert_pkt(th_pkt_t *src)
   pkt->pkt_payload->pb_refcount=1;
   if (src->pkt_header) {
     sbuf_t headers;
-    sbuf_reset(&headers);
+    sbuf_init(&headers);
     
     isom_write_avcc(&headers, pktbuf_ptr(src->pkt_header),
 		    pktbuf_len(src->pkt_header));
-    
-    
-    hexdump("   AVC before : ", pktbuf_ptr(src->pkt_header), pktbuf_len(src->pkt_header));
-    hexdump("   AVC after  : ", headers.sb_data, headers.sb_ptr);
-	
     pkt->pkt_header = pktbuf_make(headers.sb_data, headers.sb_ptr);
   }
 
   sbuf_t payload;
-  sbuf_reset(&payload);
+  sbuf_init(&payload);
 
   if(src->pkt_header)
     avc_parse_nal_units(&payload, pktbuf_ptr(src->pkt_header),
